@@ -1,55 +1,101 @@
-# Lab Task 3: Drug Dosage Calculator
+# Lab Task 3: Drug Dosage Calculator with SQLite Database
+import sqlite3
+from datetime import datetime
+
 class DosageCalc:
     def __init__(self, bme_weight, bme_age, bme_drug_name):
         """
-        Constructor for Drug Dosage Calculator
-        Stores patient weight (kg), age (years), and drug name
+        CONSTRUCTOR: Initializes dosage calculator with database
         """
         self.bme_weight = bme_weight
         self.bme_age = bme_age
         self.bme_drug_name = bme_drug_name
+        self.bme_calculated_dose = None
+        self.bme_base_dose = None
+        self.bme_applied_rules = []
+        self.bme_cap_applied = False
+        
+        # ========== DATABASE SETUP ==========
+        self.bme_db_connection = sqlite3.connect('medication_database.db')
+        self.bme_cursor = self.bme_db_connection.cursor()
+        
+        # Create medication records table
+        self.bme_cursor.execute('''
+            CREATE TABLE IF NOT EXISTS medication_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                drug_name TEXT,
+                patient_weight REAL,
+                patient_age INTEGER,
+                base_dose REAL,
+                final_dose REAL,
+                adjustments_applied TEXT,
+                cap_applied INTEGER,
+                prescribed_at TIMESTAMP
+            )
+        ''')
+        
+        # Create dosage history table
+        self.bme_cursor.execute('''
+            CREATE TABLE IF NOT EXISTS dosage_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                drug_name TEXT,
+                patient_age INTEGER,
+                patient_weight REAL,
+                calculated_dose REAL,
+                timestamp TIMESTAMP
+            )
+        ''')
+        
+        self.bme_db_connection.commit()
+        print(f"✅ Medication database initialized")
     
     def computeDose(self):
-        """
-        Calculates recommended dose in mg with rules:
-        - Base dose: 5 mg per kg of body weight
-        - Under 12 years: reduce by 30%
-        - Over 65 years: reduce by 20%
-        - Cap at 500 mg max
-        """
-        # Step 1: Calculate base dose (5 mg per kg)
-        bme_base_dose = 5 * self.bme_weight
-        
-        # Step 2: Apply age-based reductions BEFORE checking cap
-        bme_final_dose = bme_base_dose
-        bme_applied_rules = []
+        """Calculates dose and saves to database"""
+        self.bme_base_dose = 5 * self.bme_weight
+        bme_final_dose = self.bme_base_dose
+        self.bme_applied_rules = []
         
         if self.bme_age < 12:
-            bme_final_dose = bme_final_dose * (1 - 0.30)  # Reduce by 30%
-            bme_applied_rules.append(f"Pediatric reduction (under 12): -30%")
+            bme_final_dose = bme_final_dose * 0.70
+            self.bme_applied_rules.append("Pediatric reduction (-30%)")
         
         if self.bme_age > 65:
-            bme_final_dose = bme_final_dose * (1 - 0.20)  # Reduce by 20%
-            bme_applied_rules.append(f"Geriatric reduction (over 65): -20%")
+            bme_final_dose = bme_final_dose * 0.80
+            self.bme_applied_rules.append("Geriatric reduction (-20%)")
         
-        # Step 3: Apply cap if necessary (check after all reductions)
-        bme_cap_applied = False
+        self.bme_cap_applied = False
         if bme_final_dose > 500:
             bme_final_dose = 500
-            bme_cap_applied = True
+            self.bme_cap_applied = True
+            self.bme_applied_rules.append("Maximum dose cap applied (500mg)")
         
-        # Store dose for other methods
         self.bme_calculated_dose = bme_final_dose
-        self.bme_base_dose = bme_base_dose
-        self.bme_applied_rules = bme_applied_rules
-        self.bme_cap_applied = bme_cap_applied
         
-        return bme_final_dose
+        # ========== SAVE TO DATABASE ==========
+        adjustments_str = ", ".join(self.bme_applied_rules) if self.bme_applied_rules else "None"
+        
+        self.bme_cursor.execute('''
+            INSERT INTO medication_records 
+            (drug_name, patient_weight, patient_age, base_dose, final_dose, 
+             adjustments_applied, cap_applied, prescribed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (self.bme_drug_name, self.bme_weight, self.bme_age, 
+              self.bme_base_dose, self.bme_calculated_dose, 
+              adjustments_str, int(self.bme_cap_applied), datetime.now()))
+        
+        self.bme_cursor.execute('''
+            INSERT INTO dosage_history (drug_name, patient_age, patient_weight, calculated_dose, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (self.bme_drug_name, self.bme_age, self.bme_weight, 
+              self.bme_calculated_dose, datetime.now()))
+        
+        self.bme_db_connection.commit()
+        print(f"💊 Dosage calculated and saved to database")
+        
+        return self.bme_calculated_dose
     
     def printPrescription(self):
-        """
-        Displays drug name, patient details, and final dose
-        """
+        """Displays prescription"""
         print("\n" + "=" * 60)
         print("💊 MEDICAL PRESCRIPTION")
         print("=" * 60)
@@ -60,69 +106,65 @@ class DosageCalc:
         print(f"  Age:            {self.bme_age} years")
         print("-" * 60)
         print("DOSAGE CALCULATION:")
-        print(f"  Base dose:      {self.bme_base_dose:.1f} mg (5 mg/kg × {self.bme_weight} kg)")
+        print(f"  Base dose:      {self.bme_base_dose:.1f} mg")
         
-        # Show applied age adjustments
         if self.bme_applied_rules:
             for bme_rule in self.bme_applied_rules:
                 print(f"  {bme_rule}")
         
-        # Show cap warning if applied
         if self.bme_cap_applied:
-            print(f"  ⚠️  MAXIMUM DOSE CAP APPLIED: Dose > 500 mg")
+            print(f"  ⚠️  MAXIMUM DOSE CAP APPLIED")
         
         print(f"  ───────────────────────────")
         print(f"  FINAL DOSE:     {self.bme_calculated_dose:.1f} mg")
         
-        # Safety warning for high doses
         if self.bme_calculated_dose >= 450:
             print("  ⚠️  CAUTION: Approaching maximum safe dose")
         
         print("=" * 60)
+    
+    def get_prescription_history(self):
+        """Retrieve prescription history from database"""
+        self.bme_cursor.execute('''
+            SELECT drug_name, patient_weight, patient_age, final_dose, prescribed_at 
+            FROM medication_records 
+            ORDER BY prescribed_at DESC 
+            LIMIT 5
+        ''')
+        history = self.bme_cursor.fetchall()
+        
+        print("\n📊 LAST 5 PRESCRIPTIONS:")
+        for record in history:
+            print(f"   {record[0]}: {record[3]}mg for {record[2]}yo/{record[1]}kg at {record[4]}")
+    
+    def __del__(self):
+        """DESTRUCTOR: Closes database connection"""
+        if hasattr(self, 'bme_db_connection'):
+            print(f"\n🗑️ Closing medication database connection")
+            self.bme_db_connection.close()
+            print(f"   ✅ Database closed")
 
 
 # Test the Drug Dosage Calculator
-print("🏥 DRUG DOSAGE CALCULATOR - Clinical Dosing System")
+print("🏥 DRUG DOSAGE CALCULATOR - WITH DATABASE")
 print("=" * 60)
 
-# Test Case 1: Normal adult (no adjustments, no cap)
-print("\n[Test Case 1: Normal Adult]")
-bme_patient1 = DosageCalc(70, 35, "Amoxicillin")
-bme_patient1.computeDose()
-bme_patient1.printPrescription()
+patients = [
+    (70, 35, "Amoxicillin"),
+    (40, 8, "Ceftriaxone"),
+    (75, 72, "Warfarin"),
+    (120, 45, "Paracetamol"),
+    (150, 10, "Ibuprofen"),
+    (130, 80, "Metformin"),
+    (45, 30, "Azithromycin")
+]
 
-# Test Case 2: Pediatric patient (under 12, 30% reduction)
-print("\n[Test Case 2: Pediatric Patient - with reduction]")
-bme_patient2 = DosageCalc(40, 8, "Ceftriaxone")
-bme_patient2.computeDose()
-bme_patient2.printPrescription()
+for weight, age, drug in patients:
+    print(f"\n[Test Case]")
+    patient = DosageCalc(weight, age, drug)
+    patient.computeDose()
+    patient.printPrescription()
 
-# Test Case 3: Geriatric patient (over 65, 20% reduction)
-print("\n[Test Case 3: Geriatric Patient - with reduction]")
-bme_patient3 = DosageCalc(75, 72, "Warfarin")
-bme_patient3.computeDose()
-bme_patient3.printPrescription()
-
-# Test Case 4: Heavy adult needing dose capping
-print("\n[Test Case 4: Heavy Patient - dose cap applied]")
-bme_patient4 = DosageCalc(120, 45, "Paracetamol")
-bme_patient4.computeDose()
-bme_patient4.printPrescription()
-
-# Test Case 5: Pediatric patient with weight causing cap
-print("\n[Test Case 5: Pediatric Patient - both pediatric reduction AND cap]")
-bme_patient5 = DosageCalc(150, 10, "Ibuprofen")
-bme_patient5.computeDose()
-bme_patient5.printPrescription()
-
-# Test Case 6: Elderly patient with weight causing cap
-print("\n[Test Case 6: Geriatric Patient - both geriatric reduction AND cap]")
-bme_patient6 = DosageCalc(130, 80, "Metformin")
-bme_patient6.computeDose()
-bme_patient6.printPrescription()
-
-# Test Case 7: Very light adult (no adjustments, no cap)
-print("\n[Test Case 7: Light Adult]")
-bme_patient7 = DosageCalc(45, 30, "Azithromycin")
-bme_patient7.computeDose()
-bme_patient7.printPrescription()
+print("\n" + "=" * 60)
+print("All prescriptions saved to database")
+print("=" * 60)

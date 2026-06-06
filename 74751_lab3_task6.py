@@ -1,45 +1,105 @@
-# Lab Task 6: MRI Scan intensity grid
+# Lab Task 6: MRI Scan Intensity Grid with SQLite Database
+import sqlite3
+from datetime import datetime
+
 class MRIGrid:
-    def __init__(self, bme_rows, bme_cols):
+    def __init__(self, bme_rows, bme_cols, bme_scan_name="MRI_Scan"):
         """
-        Constructor for MRI Grid
-        Creates a 2D grid of size rows × cols initialized with zeros
+        CONSTRUCTOR: Creates MRI grid with database
         """
         self.bme_rows = bme_rows
         self.bme_cols = bme_cols
-        # Initialize 2D grid with zeros
+        self.bme_scan_name = bme_scan_name
         self.bme_grid = [[0 for _ in range(bme_cols)] for _ in range(bme_rows)]
+        
+        # ========== DATABASE SETUP ==========
+        self.bme_db_connection = sqlite3.connect('mri_database.db')
+        self.bme_cursor = self.bme_db_connection.cursor()
+        
+        # Create MRI scans table
+        self.bme_cursor.execute('''
+            CREATE TABLE IF NOT EXISTS mri_scans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_name TEXT,
+                rows INTEGER,
+                cols INTEGER,
+                created_at TIMESTAMP
+            )
+        ''')
+        
+        # Create pixel data table
+        self.bme_cursor.execute('''
+            CREATE TABLE IF NOT EXISTS mri_pixels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id INTEGER,
+                row_num INTEGER,
+                col_num INTEGER,
+                intensity INTEGER,
+                tissue_type TEXT,
+                FOREIGN KEY (scan_id) REFERENCES mri_scans (id)
+            )
+        ''')
+        
+        # Create analysis results table
+        self.bme_cursor.execute('''
+            CREATE TABLE IF NOT EXISTS mri_analysis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id INTEGER,
+                dark_count INTEGER,
+                grey_count INTEGER,
+                bright_count INTEGER,
+                edge_count INTEGER,
+                analysis_date TIMESTAMP,
+                FOREIGN KEY (scan_id) REFERENCES mri_scans (id)
+            )
+        ''')
+        
+        # Register this scan
+        self.bme_cursor.execute('''
+            INSERT INTO mri_scans (scan_name, rows, cols, created_at)
+            VALUES (?, ?, ?, ?)
+        ''', (bme_scan_name, bme_rows, bme_cols, datetime.now()))
+        
+        self.bme_db_connection.commit()
+        self.bme_scan_id = self.bme_cursor.lastrowid
+        print(f"✅ MRI Database initialized - Scan ID: {self.bme_scan_id}")
     
     def fillGrid(self):
-        """
-        Populates the grid with intensity values entered by user
-        Uses nested loops: rows (outer) × columns (inner)
-        """
+        """Populates grid and saves to database"""
         print("\n" + "=" * 60)
         print("🖼️  MRI SCAN INTENSITY GRID INPUT")
         print("=" * 60)
-        print("Intensity range: 0 (dark/air/fluid) to 255 (bright/bone/fat)")
+        print("Intensity range: 0 to 255")
         print("-" * 60)
         
         for bme_row in range(self.bme_rows):
-            print(f"\n📊 Row {bme_row + 1} of {self.bme_rows}:")
+            print(f"\n📊 Row {bme_row + 1}:")
             for bme_col in range(self.bme_cols):
-                while True:  # Input validation loop
+                while True:
                     try:
                         bme_value = int(input(f"  Column {bme_col + 1}: "))
                         if bme_value < 0 or bme_value > 255:
-                            print(f"    ⚠️  Invalid! Value must be between 0-255. Re-enter:")
+                            print("    ⚠️  Value must be between 0-255.")
                             continue
                         self.bme_grid[bme_row][bme_col] = bme_value
+                        
+                        # Save pixel to database
+                        tissue = self._classifyTissue(bme_value)
+                        self.bme_cursor.execute('''
+                            INSERT INTO mri_pixels (scan_id, row_num, col_num, intensity, tissue_type)
+                            VALUES (?, ?, ?, ?, ?)
+                        ''', (self.bme_scan_id, bme_row + 1, bme_col + 1, bme_value, tissue))
+                        self.bme_db_connection.commit()
+                        
                         break
                     except ValueError:
-                        print("    ⚠️  Invalid input! Please enter an integer.")
+                        print("    ⚠️  Invalid input!")
         
-        print("\n✅ Grid filled successfully!")
+        print("\n✅ Grid saved to database!")
         self._displayGrid()
     
     def _displayGrid(self):
-        """Helper method to display the grid in a formatted way"""
+        """Displays the grid"""
         print("\n📋 CURRENT MRI GRID:")
         print("-" * 60)
         print("     ", end="")
@@ -51,7 +111,6 @@ class MRIGrid:
             print(f"R{bme_row+1:<3} |", end="")
             for bme_col in range(self.bme_cols):
                 bme_val = self.bme_grid[bme_row][bme_col]
-                # Color-code based on tissue type
                 if bme_val <= 85:
                     print(f" {bme_val:3d}🔘", end="")
                 elif bme_val <= 170:
@@ -62,47 +121,32 @@ class MRIGrid:
         print("-" * 60)
     
     def _classifyTissue(self, bme_intensity):
-        """
-        Classifies a single intensity value into tissue type
-        Returns: string tissue type
-        """
         if bme_intensity <= 85:
-            return "Dark Tissue (Air/Fluid)"
+            return "Dark Tissue"
         elif bme_intensity <= 170:
-            return "Grey Tissue (Soft Tissue)"
-        else:  # 171-255
-            return "Bright Tissue (Bone/Fat)"
+            return "Grey Tissue"
+        else:
+            return "Bright Tissue"
     
     def classifyPixels(self):
-        """
-        Iterates through all cells and:
-        1. Classifies each pixel into tissue type
-        2. Counts total occurrences of each tissue type
-        3. Detects edge points (difference > 80 from left neighbour)
-        """
+        """Classifies pixels and saves analysis to database"""
         if not self.bme_grid:
-            print("\n⚠️ No grid data found. Please fill the grid first.")
+            print("\n⚠️ No grid data found.")
             return
         
         print("\n" + "=" * 60)
-        print("🔬 MRI SCAN ANALYSIS - Pixel Classification")
+        print("🔬 MRI SCAN ANALYSIS")
         print("=" * 60)
         
-        # Initialize counters for tissue types
         bme_dark_count = 0
         bme_grey_count = 0
         bme_bright_count = 0
-        
-        # Store edge points for display
         bme_edge_points = []
         
-        # Nested loops to process each cell
         for bme_row in range(self.bme_rows):
             for bme_col in range(self.bme_cols):
                 bme_intensity = self.bme_grid[bme_row][bme_col]
                 
-                # Classify tissue type and update counter
-                bme_tissue = self._classifyTissue(bme_intensity)
                 if bme_intensity <= 85:
                     bme_dark_count += 1
                 elif bme_intensity <= 170:
@@ -110,177 +154,95 @@ class MRIGrid:
                 else:
                     bme_bright_count += 1
                 
-                # Check for edge point (difference from left neighbour > 80)
-                # Skip first column (col = 0) as it has no left neighbour
                 if bme_col > 0:
-                    bme_left_neighbour = self.bme_grid[bme_row][bme_col - 1]
-                    bme_difference = abs(bme_intensity - bme_left_neighbour)
-                    
-                    if bme_difference > 80:
+                    bme_left = self.bme_grid[bme_row][bme_col - 1]
+                    if abs(bme_intensity - bme_left) > 80:
                         bme_edge_points.append({
-                            'row': bme_row + 1,  # Convert to 1-indexed for display
-                            'col': bme_col + 1,
-                            'value': bme_intensity,
-                            'left_value': bme_left_neighbour,
-                            'difference': bme_difference
+                            'row': bme_row + 1, 'col': bme_col + 1,
+                            'value': bme_intensity, 'left_value': bme_left
                         })
         
-        # Display tissue type counts
         print("\n📊 TISSUE TYPE DISTRIBUTION:")
         print("-" * 50)
-        print(f"  🟤 Dark Tissue (0-85):     {bme_dark_count:3d} pixels ({bme_dark_count * 100 // (self.bme_rows * self.bme_cols)}%)")
-        print(f"  ⚪ Grey Tissue (86-170):   {bme_grey_count:3d} pixels ({bme_grey_count * 100 // (self.bme_rows * self.bme_cols)}%)")
-        print(f"  ⬤ Bright Tissue (171-255): {bme_bright_count:3d} pixels ({bme_bright_count * 100 // (self.bme_rows * self.bme_cols)}%)")
+        total = self.bme_rows * self.bme_cols
+        print(f"  Dark Tissue:   {bme_dark_count:3d} pixels ({bme_dark_count*100//total}%)")
+        print(f"  Grey Tissue:   {bme_grey_count:3d} pixels ({bme_grey_count*100//total}%)")
+        print(f"  Bright Tissue: {bme_bright_count:3d} pixels ({bme_bright_count*100//total}%)")
         
-        # Display tissue type legend
-        print("\n📖 Tissue Type Legend:")
-        print("  🔘 Dark Tissue (0-85)   → Air, Fluid, CSF")
-        print("  ◉  Grey Tissue (86-170) → Muscle, Organs, Brain matter")
-        print("  ⬤ Bright Tissue (171-255) → Bone, Fat, Contrast agent")
-        
-        # Display edge points
-        print("\n" + "=" * 60)
-        print("📍 EDGE DETECTION RESULTS")
-        print("=" * 60)
-        print("Edge points detected where intensity differs from left neighbour by >80 units")
-        print("-" * 60)
-        
-        if bme_edge_points:
-            print(f"\nFound {len(bme_edge_points)} edge point(s):")
-            print(f"{'Row':<6} {'Col':<6} {'Intensity':<12} {'Left Value':<12} {'Difference':<12}")
-            print("-" * 60)
-            for bme_point in bme_edge_points:
-                print(f"{bme_point['row']:<6} {bme_point['col']:<6} {bme_point['value']:<12} "
-                      f"{bme_point['left_value']:<12} {bme_point['difference']:<12}")
-                
-                # Add visual indicator
-                if bme_point['value'] > bme_point['left_value']:
-                    print(f"      ↗️  Sharp increase (dark to bright transition)")
-                else:
-                    print(f"      ↘️  Sharp decrease (bright to dark transition)")
-        else:
-            print("\n  ✅ No edge points detected. Tissue boundaries are smooth.")
-        
-        # Additional analysis: Find regions of interest
-        self._findRegionsOfInterest(bme_dark_count, bme_grey_count, bme_bright_count)
-        
-        print("\n" + "=" * 60)
-        print("Analysis complete")
-        print("=" * 60)
-    
-    def _findRegionsOfInterest(self, bme_dark, bme_grey, bme_bright):
-        """Helper method to identify clinical regions of interest"""
-        bme_total = self.bme_rows * self.bme_cols
-        
-        print("\n🎯 CLINICAL OBSERVATIONS:")
+        print("\n📍 EDGE DETECTION:")
         print("-" * 50)
+        if bme_edge_points:
+            print(f"Found {len(bme_edge_points)} edge point(s)")
+            for ep in bme_edge_points[:5]:
+                print(f"  Row {ep['row']}, Col {ep['col']}: {ep['left_value']} → {ep['value']}")
+        else:
+            print("  No edge points detected")
         
-        if bme_bright > bme_total * 0.5:
-            print("  ⚠️  >50% Bright Tissue detected: Possible dense bone structure or calcification")
-        elif bme_dark > bme_total * 0.4:
-            print("  📍 >40% Dark Tissue detected: Large fluid/air-filled regions present")
+        # Save analysis to database
+        self.bme_cursor.execute('''
+            INSERT INTO mri_analysis (scan_id, dark_count, grey_count, bright_count, edge_count, analysis_date)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (self.bme_scan_id, bme_dark_count, bme_grey_count, bme_bright_count, 
+              len(bme_edge_points), datetime.now()))
+        self.bme_db_connection.commit()
         
-        if bme_grey > bme_total * 0.6:
-            print("  ℹ️  Predominantly soft tissue - Typical for organ imaging")
-        
-        # Check for tissue heterogeneity
-        if bme_dark > 0 and bme_bright > 0 and bme_grey > 0:
-            print("  🔬 All three tissue types present - Heterogeneous tissue composition")
-        
-        # Quality check
-        bme_very_low = sum(1 for row in self.bme_grid for val in row if val < 20)
-        bme_very_high = sum(1 for row in self.bme_grid for val in row if val > 240)
-        
-        if bme_very_low > bme_total * 0.3:
-            print("  ⚠️  Large very dark regions (<20) - Check for imaging artifact or air pockets")
-        if bme_very_high > bme_total * 0.3:
-            print("  ⚠️  Large very bright regions (>240) - Possible saturation or metal artifact")
+        print("\n💾 Analysis saved to database!")
+        print("=" * 60)
     
     def setGridFromData(self, bme_data):
-        """Helper method to set grid directly from data (for testing)"""
-        if len(bme_data) == self.bme_rows and len(bme_data[0]) == self.bme_cols:
-            self.bme_grid = bme_data
-            print("\n📊 Test data loaded into grid")
-            self._displayGrid()
-        else:
-            print("\n⚠️ Data dimensions don't match grid size!")
+        """Sets grid from data and saves to database"""
+        self.bme_grid = bme_data
+        print("\n📊 Test data loaded")
+        
+        # Save to database
+        for row in range(self.bme_rows):
+            for col in range(self.bme_cols):
+                tissue = self._classifyTissue(self.bme_grid[row][col])
+                self.bme_cursor.execute('''
+                    INSERT INTO mri_pixels (scan_id, row_num, col_num, intensity, tissue_type)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (self.bme_scan_id, row + 1, col + 1, self.bme_grid[row][col], tissue))
+        self.bme_db_connection.commit()
+        
+        self._displayGrid()
+    
+    def __del__(self):
+        """DESTRUCTOR: Closes database connection"""
+        if hasattr(self, 'bme_db_connection'):
+            print(f"\n🗑️ Closing MRI database for {self.bme_scan_name}")
+            self.bme_db_connection.close()
+            print(f"   ✅ Database closed")
 
 
-# Main program - Test the MRI Grid
-print("🏥 MRI SCAN INTENSITY GRID ANALYSER")
-print("Radiology Department - Tissue Classification System")
+# Main program
+print("🏥 MRI SCAN INTENSITY GRID ANALYSER WITH DATABASE")
 print("=" * 60)
 
-# Choose input method
-print("\nChoose input method:")
-print("1. Enter intensity values manually")
-print("2. Use demo data")
-bme_choice = input("Enter choice (1 or 2): ")
+print("\n📊 Loading demo MRI scan data...")
 
-if bme_choice == "1":
-    bme_rows = int(input("\nEnter number of rows: "))
-    bme_cols = int(input("Enter number of columns: "))
-    
-    bme_mri = MRIGrid(bme_rows, bme_cols)
-    bme_mri.fillGrid()
-    bme_mri.classifyPixels()
+# Test Case 1
+print("\n" + "🎯" * 20)
+print("TEST CASE 1: Smooth Tissue Transition")
+print("🎯" * 20)
+mri1 = MRIGrid(3, 4, "Smooth_Transition")
+mri1.setGridFromData([
+    [50, 55, 60, 65],
+    [100, 105, 110, 115],
+    [200, 205, 210, 215]
+])
+mri1.classifyPixels()
 
-else:
-    # Demo data covering all scenarios
-    print("\n📊 Loading demo MRI scan data...")
-    
-    # Test Case 1: Smooth transition (no edges)
-    print("\n" + "🎯" * 20)
-    print("TEST CASE 1: Smooth Tissue Transition")
-    print("🎯" * 20)
-    bme_mri1 = MRIGrid(3, 4)
-    bme_mri1.setGridFromData([
-        [50, 55, 60, 65],   # Dark tissue region
-        [100, 105, 110, 115],  # Grey tissue region
-        [200, 205, 210, 215]   # Bright tissue region
-    ])
-    bme_mri1.classifyPixels()
-    
-    # Test Case 2: Multiple edges (sharp boundaries)
-    print("\n" + "🎯" * 20)
-    print("TEST CASE 2: Sharp Tissue Boundaries (Multiple Edges)")
-    print("🎯" * 20)
-    bme_mri2 = MRIGrid(4, 5)
-    bme_mri2.setGridFromData([
-        [30, 150, 30, 150, 30],    # Alternating dark/grey
-        [200, 50, 200, 50, 200],    # Alternating bright/dark
-        [80, 180, 80, 180, 80],     # Alternating grey/bright
-        [240, 40, 240, 40, 240]     # Alternating bright/dark
-    ])
-    bme_mri2.classifyPixels()
-    
-    # Test Case 3: Predominantly one tissue type
-    print("\n" + "🎯" * 20)
-    print("TEST CASE 3: Homogeneous Tissue (Bone Scan)")
-    print("🎯" * 20)
-    bme_mri3 = MRIGrid(4, 4)
-    bme_mri3.setGridFromData([
-        [210, 215, 220, 218],
-        [212, 220, 225, 222],
-        [208, 218, 230, 225],
-        [215, 220, 222, 228]
-    ])
-    bme_mri3.classifyPixels()
-    
-    # Test Case 4: Mixed with edges at boundaries
-    print("\n" + "🎯" * 20)
-    print("TEST CASE 4: Clinical MRI - Brain Scan Simulation")
-    print("🎯" * 20)
-    bme_mri4 = MRIGrid(5, 5)
-    bme_mri4.setGridFromData([
-        [20, 25, 30, 25, 20],    # CSF/Dark at edges
-        [25, 150, 155, 150, 25],  # Grey matter
-        [30, 155, 200, 155, 30],  # White matter
-        [25, 150, 155, 150, 25],  # Grey matter
-        [20, 25, 30, 25, 20]      # CSF/Dark at edges
-    ])
-    bme_mri4.classifyPixels()
+# Test Case 2
+print("\n" + "🎯" * 20)
+print("TEST CASE 2: Sharp Boundaries")
+print("🎯" * 20)
+mri2 = MRIGrid(4, 5, "Sharp_Boundaries")
+mri2.setGridFromData([
+    [30, 150, 30, 150, 30],
+    [200, 50, 200, 50, 200],
+    [80, 180, 80, 180, 80],
+    [240, 40, 240, 40, 240]
+])
+mri2.classifyPixels()
 
-print("\n" + "=" * 60)
-print("MRI Analysis Complete")
-print("=" * 60)
+print("\n✅ All MRI data saved to mri_database.db")
